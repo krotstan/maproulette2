@@ -618,8 +618,9 @@ class ChallengeDAL @Inject() (override val db:Database, taskDAL: TaskDAL,
               // If the challenge has no tasks in the created status it need to be marked finished.
               val updateStatusQuery =
                 s"""UPDATE challenges SET status = ${Challenge.STATUS_FINISHED}
-                            WHERE id = ${id} AND status = ${Challenge.STATUS_READY} AND
-                            0 = (SELECT COUNT(*) AS total FROM tasks
+                            WHERE id = ${id} AND
+                            (status = ${Challenge.STATUS_READY} OR status = ${Challenge.STATUS_NA}) 
+                            AND 0 = (SELECT COUNT(*) AS total FROM tasks
                                       WHERE tasks.parent_id = ${id}
                                       AND status = ${Task.STATUS_CREATED})
                             RETURNING ${this.retrieveColumns}"""

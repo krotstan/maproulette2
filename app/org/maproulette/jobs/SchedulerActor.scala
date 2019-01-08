@@ -51,6 +51,7 @@ class SchedulerActor @Inject() (config:Config,
     case RunJob("OSMChangesetMatcher", action) => this.matchChangeSets(action)
     case RunJob("cleanDeleted", action) => this.cleanDeleted(action)
     case RunJob("KeepRightUpdate", action) => this.keepRightUpdate(action)
+    case RunJob("updateChallengeFinished", action) => this.updateChallengeFinished(action)
   }
 
   /**
@@ -291,6 +292,28 @@ class SchedulerActor @Inject() (config:Config,
       case Failure(f) =>
         // something went wrong, we should bail out immediately
         Logger.warn(s"The KeepRight challenge creation failed. ${f.getMessage}")
+    }
+  }
+
+  /**
+    * Updates any challenges that have completed all tasks to the finished status
+    *
+    * @param challengeId The id of the challenge you want updated
+    */
+  def updateChallengeFinished(action:String) : Unit = {
+    Logger.info(action)
+    this.db.withTransaction { implicit c =>
+      val statusUpdated = SQL"""UPDATE challenges c SET status=5 WHERE (c.status=3 OR c.status=0)
+                AND 0=(SELECT COUNT(*) AS total FROM tasks
+                WHERE tasks.parent_id=c.id AND status=0)""".executeUpdate()
+      Logger.info(s"$statusUpdated challenges were found and updated to the finished status.")
+    }
+
+    this.db.withTransaction { implicit c =>
+      val statusReverted = SQL"""UPDATE challenges c SET status=3 WHERE c.status=5
+                AND 0!=(SELECT COUNT(*) AS total FROM tasks
+                WHERE tasks.parent_id=c.id AND status=0)""".executeUpdate()
+      Logger.info(s"$statusReverted challenges were found with open tasks and reverted back to the ready status.")
     }
   }
 }
