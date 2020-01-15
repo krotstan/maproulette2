@@ -644,18 +644,9 @@ class TaskReviewDAL @Inject()(override val db: Database,
                             excludeOtherReviewers: Boolean=false)
                      (implicit c: Option[Connection] = None): List[TaskCluster] = {
     this.withMRConnection { implicit c =>
-      val taskClusterParser = int("kmeans") ~ int("numberOfPoints") ~
-        str("geom") ~ str("bounding") map {
-        case kmeans ~ totalPoints ~ geom ~ bounding =>
-          val locationJSON = Json.parse(geom)
-          val coordinates = (locationJSON \ "coordinates").as[List[Double]]
-          val point = Point(coordinates(1), coordinates.head)
-          TaskCluster(kmeans, totalPoints, None, None, None, params, point, Json.parse(bounding), List())
-      }
-
       val fetchBy = if (reviewTasksType == 2) "task_review.reviewed_by" else "task_review.review_requested_by"
-      val joinClause = new StringBuilder("INNER JOIN challenges c ON c.id = tasks.parent_id ")
-      joinClause ++= "LEFT OUTER JOIN task_review ON task_review.task_id = tasks.id "
+      val joinClause = new StringBuilder("INNER JOIN challenges c ON c.id = t.parent_id ")
+      joinClause ++= "LEFT OUTER JOIN task_review ON task_review.task_id = t.id "
       joinClause ++= "INNER JOIN projects p ON p.id = c.parent_id "
 
       var whereClause = new StringBuilder(s"${fetchBy}=${user.id}")
@@ -681,7 +672,7 @@ class TaskReviewDAL @Inject()(override val db: Database,
                   task_review.review_requested_by != ${user.id} """
         }
       }
-      this.appendInWhereClause(whereClause, "(tasks.bundle_id is NULL OR tasks.is_bundle_primary = true)")
+      this.appendInWhereClause(whereClause, "(t.bundle_id is NULL OR t.is_bundle_primary = true)")
 
       val parameters = new ListBuffer[NamedParameter]()
       parameters ++= addSearchToQuery(params, whereClause)
@@ -690,7 +681,7 @@ class TaskReviewDAL @Inject()(override val db: Database,
         this.appendInWhereClause(whereClause, s"task_review.review_status <> ${Task.REVIEW_STATUS_REQUESTED} ")
       }
 
-      setupReviewSearchClause(whereClause, joinClause, params, startDate, endDate)
+      setupReviewSearchClause(whereClause, joinClause, params, startDate, endDate, "t")
 
       val where = if (whereClause.isEmpty) {
         whereClause.toString
@@ -698,28 +689,10 @@ class TaskReviewDAL @Inject()(override val db: Database,
         "WHERE " + whereClause.toString
       }
 
-      val query =
-        s"""SELECT kmeans, count(*) as numberOfPoints,
-                ST_AsGeoJSON(ST_Centroid(ST_Collect(location))) AS geom,
-                ST_AsGeoJSON(ST_ConvexHull(ST_Collect(location))) AS bounding
-             FROM (
-               SELECT ST_ClusterKMeans(tasks.location,
-                          (SELECT
-                              CASE WHEN COUNT(*) < $numberOfPoints THEN COUNT(*) ELSE $numberOfPoints END
-                            FROM tasks
-                            ${joinClause.toString}
-                            $where
-                          )::Integer
-                        ) OVER () AS kmeans, tasks.location
-               FROM tasks
-               ${joinClause.toString}
-               $where
-             ) AS ksub
-             WHERE location IS NOT NULL
-             GROUP BY kmeans
-             ORDER BY kmeans
-           """
-      sqlWithParameters(query, parameters).as(taskClusterParser.*)
+      val query = getTaskClusterQuery(joinClause.toString, where, numberOfPoints)
+      var result = sqlWithParameters(query, parameters).as(getTaskClusterParser(params).*)
+      // Filter out invalid clusters.
+      result.filter( _ != None ).asInstanceOf[List[TaskCluster]]
     }
   }
 
@@ -729,7 +702,8 @@ class TaskReviewDAL @Inject()(override val db: Database,
    */
   private def setupReviewSearchClause(whereClause: StringBuilder, joinClause: StringBuilder,
                                       searchParameters: SearchParameters,
-                                      startDate: String, endDate: String) {
+                                      startDate: String, endDate: String,
+                                      tasksTableName: String = "tasks") {
     searchParameters.owner match {
      case Some(o) if o.nonEmpty =>
        joinClause ++= "INNER JOIN users u ON u.id = task_review.review_requested_by "
@@ -746,7 +720,7 @@ class TaskReviewDAL @Inject()(override val db: Database,
 
     searchParameters.taskStatus match {
       case Some(statuses) if statuses.nonEmpty =>
-        val statusClause = new StringBuilder(s"(tasks.status IN (${statuses.mkString(",")})")
+        val statusClause = new StringBuilder(s"(${tasksTableName}.status IN (${statuses.mkString(",")})")
         if (statuses.contains(-1)) {
           statusClause ++= " OR c.status IS NULL"
         }
@@ -765,7 +739,7 @@ class TaskReviewDAL @Inject()(override val db: Database,
     }
 
     searchParameters.location match {
-      case Some(sl) => this.appendInWhereClause(whereClause, s"tasks.location @ ST_MakeEnvelope (${sl.left}, ${sl.bottom}, ${sl.right}, ${sl.top}, 4326)")
+      case Some(sl) => this.appendInWhereClause(whereClause, s"${tasksTableName}.location @ ST_MakeEnvelope (${sl.left}, ${sl.bottom}, ${sl.right}, ${sl.top}, 4326)")
       case None => // do nothing
     }
 

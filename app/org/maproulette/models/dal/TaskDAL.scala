@@ -168,6 +168,53 @@ class TaskDAL @Inject()(override val db: Database,
     }
   }
 
+  protected def getTaskClusterParser(params: SearchParameters): anorm.RowParser[Serializable] = {
+    int("kmeans") ~ int("numberOfPoints") ~ get[Option[Long]]("taskId") ~
+      get[Option[Int]]("taskStatus") ~ get[Option[Int]]("taskPriority") ~ get[Option[String]]("geojson") ~ str("geom") ~
+      str("bounding") ~ get[List[Long]]("challengeIds") map {
+      case kmeans ~ totalPoints ~ taskId ~ taskStatus ~ taskPriority ~ geojson ~ geom ~ bounding ~ challengeIds =>
+        val locationJSON = Json.parse(geom)
+        val coordinates = (locationJSON \ "coordinates").as[List[Double]]
+        // Let's check to make sure we received valid number of coordinates.
+        if (coordinates.length > 1) {
+          val point = Point(coordinates(1), coordinates.head)
+          TaskCluster(kmeans, totalPoints, taskId, taskStatus, taskPriority, params, point,
+                      Json.parse(bounding), challengeIds, geojson.map(Json.parse(_)))
+        }
+        else {
+          None
+        }
+    }
+  }
+
+  protected def getTaskClusterQuery(joinClause: String, whereClause: String, numberOfPoints: Int): String =  {
+    s"""SELECT kmeans, count(*) as numberOfPoints,
+          CASE WHEN count(*)=1 THEN (array_agg(taskId))[1] END as taskId,
+          CASE WHEN count(*)=1 THEN (array_agg(geojson))[1] END as geojson,
+          CASE WHEN count(*)=1 THEN (array_agg(taskStatus))[1] END as taskStatus,
+          CASE WHEN count(*)=1 THEN (array_agg(taskPriority))[1] END as taskPriority,
+          ST_AsGeoJSON(ST_Centroid(ST_Collect(location))) AS geom,
+          ST_AsGeoJSON(ST_ConvexHull(ST_Collect(location))) AS bounding,
+          array_agg(distinct challengeIds) as challengeIds
+       FROM (
+         SELECT t.id as taskId, t.status as taskStatus, t.priority as taskPriority, t.geojson::TEXT as geojson, ST_ClusterKMeans(t.location,
+                    (SELECT
+                        CASE WHEN COUNT(*) < $numberOfPoints THEN COUNT(*) ELSE $numberOfPoints END
+                      FROM tasks t
+                      ${joinClause}
+                      $whereClause
+                    )::Integer
+                  ) OVER () AS kmeans, t.location, t.parent_id as challengeIds
+         FROM tasks t
+         ${joinClause}
+         $whereClause
+       ) AS ksub
+       WHERE location IS NOT NULL
+       GROUP BY kmeans
+       ORDER BY kmeans
+    """
+  }
+
   /**
     * Retrieves the object based on the name, this function is somewhat weak as there could be
     * multiple objects with the same name. The database only restricts the same name in combination
@@ -1265,23 +1312,6 @@ class TaskDAL @Inject()(override val db: Database,
   def getTaskClusters(params: SearchParameters, numberOfPoints: Int = TaskDAL.DEFAULT_NUMBER_OF_POINTS)
                      (implicit c: Option[Connection] = None): List[TaskCluster] = {
     this.withMRConnection { implicit c =>
-      val taskClusterParser = int("kmeans") ~ int("numberOfPoints") ~ get[Option[Long]]("taskId") ~
-        get[Option[Int]]("taskStatus") ~ get[Option[Int]]("taskPriority") ~ get[Option[String]]("geojson") ~ str("geom") ~
-        str("bounding") ~ get[List[Long]]("challengeIds") map {
-        case kmeans ~ totalPoints ~ taskId ~ taskStatus ~ taskPriority ~ geojson ~ geom ~ bounding ~ challengeIds =>
-          val locationJSON = Json.parse(geom)
-          val coordinates = (locationJSON \ "coordinates").as[List[Double]]
-          // Let's check to make sure we received valid number of coordinates.
-          if (coordinates.length > 1) {
-            val point = Point(coordinates(1), coordinates.head)
-            TaskCluster(kmeans, totalPoints, taskId, taskStatus, taskPriority, params, point,
-                        Json.parse(bounding), challengeIds, geojson.map(Json.parse(_)))
-          }
-          else {
-            None
-          }
-      }
-
       val whereClause = new StringBuilder(" c.deleted = false AND p.deleted = false  ")
       val joinClause = new StringBuilder(
         """
@@ -1296,33 +1326,8 @@ class TaskDAL @Inject()(override val db: Database,
         "WHERE " + whereClause.toString
       }
 
-      val query =
-        s"""SELECT kmeans, count(*) as numberOfPoints,
-                CASE WHEN count(*)=1 THEN (array_agg(taskId))[1] END as taskId,
-                CASE WHEN count(*)=1 THEN (array_agg(geojson))[1] END as geojson,
-                CASE WHEN count(*)=1 THEN (array_agg(taskStatus))[1] END as taskStatus,
-                CASE WHEN count(*)=1 THEN (array_agg(taskPriority))[1] END as taskPriority,
-                ST_AsGeoJSON(ST_Centroid(ST_Collect(location))) AS geom,
-                ST_AsGeoJSON(ST_ConvexHull(ST_Collect(location))) AS bounding,
-                array_agg(distinct challengeIds) as challengeIds
-             FROM (
-               SELECT t.id as taskId, t.status as taskStatus, t.priority as taskPriority, t.geojson::TEXT as geojson, ST_ClusterKMeans(t.location,
-                          (SELECT
-                              CASE WHEN COUNT(*) < $numberOfPoints THEN COUNT(*) ELSE $numberOfPoints END
-                            FROM tasks t
-                            ${joinClause.toString}
-                            $where
-                          )::Integer
-                        ) OVER () AS kmeans, t.location, t.parent_id as challengeIds
-               FROM tasks t
-               ${joinClause.toString}
-               $where
-             ) AS ksub
-             WHERE location IS NOT NULL
-             GROUP BY kmeans
-             ORDER BY kmeans
-           """
-      var result = sqlWithParameters(query, parameters).as(taskClusterParser.*)
+      val query = getTaskClusterQuery(joinClause.toString, where, numberOfPoints)
+      var result = sqlWithParameters(query, parameters).as(getTaskClusterParser(params).*)
       // Filter out invalid clusters.
       result.filter( _ != None ).asInstanceOf[List[TaskCluster]]
     }
