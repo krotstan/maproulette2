@@ -1266,16 +1266,16 @@ class TaskDAL @Inject()(override val db: Database,
                      (implicit c: Option[Connection] = None): List[TaskCluster] = {
     this.withMRConnection { implicit c =>
       val taskClusterParser = int("kmeans") ~ int("numberOfPoints") ~ get[Option[Long]]("taskId") ~
-        get[Option[Int]]("taskStatus") ~ get[Option[Int]]("taskPriority") ~ str("geom") ~
+        get[Option[Int]]("taskStatus") ~ get[Option[Int]]("taskPriority") ~ get[Option[String]]("geojson") ~ str("geom") ~
         str("bounding") ~ get[List[Long]]("challengeIds") map {
-        case kmeans ~ totalPoints ~ taskId ~ taskStatus ~ taskPriority ~ geom ~ bounding ~ challengeIds =>
+        case kmeans ~ totalPoints ~ taskId ~ taskStatus ~ taskPriority ~ geojson ~ geom ~ bounding ~ challengeIds =>
           val locationJSON = Json.parse(geom)
           val coordinates = (locationJSON \ "coordinates").as[List[Double]]
           // Let's check to make sure we received valid number of coordinates.
           if (coordinates.length > 1) {
             val point = Point(coordinates(1), coordinates.head)
             TaskCluster(kmeans, totalPoints, taskId, taskStatus, taskPriority, params, point,
-                        Json.parse(bounding), challengeIds)
+                        Json.parse(bounding), challengeIds, geojson.map(Json.parse(_)))
           }
           else {
             None
@@ -1299,13 +1299,14 @@ class TaskDAL @Inject()(override val db: Database,
       val query =
         s"""SELECT kmeans, count(*) as numberOfPoints,
                 CASE WHEN count(*)=1 THEN (array_agg(taskId))[1] END as taskId,
+                CASE WHEN count(*)=1 THEN (array_agg(geojson))[1] END as geojson,
                 CASE WHEN count(*)=1 THEN (array_agg(taskStatus))[1] END as taskStatus,
                 CASE WHEN count(*)=1 THEN (array_agg(taskPriority))[1] END as taskPriority,
                 ST_AsGeoJSON(ST_Centroid(ST_Collect(location))) AS geom,
                 ST_AsGeoJSON(ST_ConvexHull(ST_Collect(location))) AS bounding,
                 array_agg(distinct challengeIds) as challengeIds
              FROM (
-               SELECT t.id as taskId, t.status as taskStatus, t.priority as taskPriority, ST_ClusterKMeans(t.location,
+               SELECT t.id as taskId, t.status as taskStatus, t.priority as taskPriority, t.geojson::TEXT as geojson, ST_ClusterKMeans(t.location,
                           (SELECT
                               CASE WHEN COUNT(*) < $numberOfPoints THEN COUNT(*) ELSE $numberOfPoints END
                             FROM tasks t

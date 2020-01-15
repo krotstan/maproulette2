@@ -14,7 +14,7 @@ case class TaskCluster(clusterId: Int, numberOfPoints: Int, taskId: Option[Long]
                        taskStatus: Option[Int], taskPriority: Option[Int],
                        params: SearchParameters, point: Point,
                        bounding: JsValue = Json.toJson("{}"),
-                       challengeIds: List[Long]) extends DefaultWrites
+                       challengeIds: List[Long], geometries: Option[JsValue]=None) extends DefaultWrites
 
 object TaskCluster {
   implicit val pointWrites: Writes[Point] = Json.writes[Point]
