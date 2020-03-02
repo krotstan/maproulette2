@@ -1079,7 +1079,7 @@ class TaskReviewDAL @Inject() (
             SQL"""INSERT INTO task_review_history
                               (task_id, requested_by, reviewed_by, review_status, reviewed_at, review_started_at)
                   VALUES (${task.id}, ${user.id}, ${task.review.reviewedBy},
-                          $reviewStatus, $now, ${task.review.reviewStartedAt})""".executeUpdate()
+                          $reviewStatus, $now, ${task.review.reviewClaimedAt})""".executeUpdate()
             this.manager.notification.createReviewNotification(
               user,
               task.review.reviewedBy.getOrElse(-1),
@@ -1092,7 +1092,7 @@ class TaskReviewDAL @Inject() (
             SQL"""INSERT INTO task_review_history
                               (task_id, requested_by, reviewed_by, review_status, reviewed_at, review_started_at)
                   VALUES (${task.id}, ${task.review.reviewRequestedBy}, ${user.id},
-                          $reviewStatus, $now, ${task.review.reviewStartedAt})""".executeUpdate()
+                          $reviewStatus, $now, ${task.review.reviewClaimedAt})""".executeUpdate()
             this.manager.notification.createReviewNotification(
               user,
               task.review.reviewRequestedBy.getOrElse(-1),

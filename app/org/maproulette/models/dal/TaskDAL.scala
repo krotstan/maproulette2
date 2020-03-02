@@ -637,7 +637,7 @@ class TaskDAL @Inject() (
           }
         }
 
-        val startedLock = (SQL"""SELECT locked_time FROM locked l WHERE l.item_id = ${task.id} AND
+        val startedLock = (SQL"""SELECT created FROM locked l WHERE l.item_id = ${task.id} AND
                                        l.item_type = ${task.itemType.typeId} AND l.user_id = ${user.id}
                              """).as(SqlParser.scalar[DateTime].singleOpt)
 
